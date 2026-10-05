@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+
+# secrets — copy .env.example to .env locally
+.env
+.env.*
+!.env.example
+
+# uploaded files and local data
+uploads/
+backups/

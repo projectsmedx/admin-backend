@@ -1,0 +1,58 @@
+# MedxDashboard API — PostgreSQL + Mailpit + NestJS API
+#   docker compose up --build        → everything (API on http://localhost:4000)
+#   docker compose up -d db mailpit  → only the infrastructure (then `npm run start:dev`)
+#
+# On first start the API creates all tables (migrations) and seeds data automatically.
+name: medx-api
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: medx_hr
+      POSTGRES_USER: medx
+      POSTGRES_PASSWORD: medx
+      TZ: Asia/Dubai
+    ports:
+      - "${DB_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medx -d medx_hr"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports:
+      - "8025:8025" # web inbox → http://localhost:8025
+      - "1025:1025" # SMTP
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 4000
+      DATABASE_URL: postgres://medx:medx@db:5432/medx_hr
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-long-random-string-in-production}
+      RUN_MIGRATIONS: "true"
+      SEED_ON_START: "true"
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - uploads:/app/uploads
+    ports:
+      - "4000:4000"
+
+
+volumes:
+  pgdata:
+  uploads:
