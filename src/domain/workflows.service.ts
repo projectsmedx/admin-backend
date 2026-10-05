@@ -1,5 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import bcrypt from "bcryptjs";
+import { config } from "../config.js";
 import { DbService } from "../database/db.service.js";
 import { Repo } from "./repository.service.js";
 import { AccessService, HttpError, type Session } from "./access.service.js";
@@ -152,7 +153,7 @@ export class WorkflowsService {
           const basic = Math.round((total * 0.6) / 100) * 100;
           const joining = String(offer?.joiningDate ?? today());
           const shift = await db.one<{ id: string }>("SELECT id FROM shifts ORDER BY start_time LIMIT 1");
-          let email = `${String(record.name).toLowerCase().replace(/[^a-z]+/g, ".")}@medxpharmacy.com`;
+          let email = `${String(record.name).toLowerCase().replace(/[^a-z]+/g, ".")}@${config.companyEmailDomain}`;
           if ((await repo.find("employees", { email })).length) email = email.replace("@", `.${Date.now() % 1000}@`);
           const emp = await repo.insert("employees", {
             firstName: first, lastName: rest.join(" ") || "-", email, personalEmail: record.email, phone: record.phone,

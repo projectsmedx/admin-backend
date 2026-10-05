@@ -17,11 +17,12 @@ import { PayController } from "./modules/pay.controller.js";
 import { ResourcesController } from "./modules/resources.controller.js";
 import { DashboardService } from "./modules/dashboard.service.js";
 import { JobsService } from "./jobs/jobs.service.js";
+import { StorageService } from "./storage/storage.service.js";
 
 @Module({
   imports: [ScheduleModule.forRoot()],
   // Order matters: specific routes first, the generic /:resource controller last
   controllers: [AuthController, CoreController, PeopleController, TimeController, PayController, ResourcesController],
-  providers: [DbService, MigratorService, SeederService, Repo, AccessService, HooksService, WorkflowsService, DashboardService, JobsService, { provide: APP_GUARD, useClass: AuthGuard }],
+  providers: [DbService, MigratorService, SeederService, Repo, AccessService, HooksService, WorkflowsService, DashboardService, JobsService, StorageService, { provide: APP_GUARD, useClass: AuthGuard }],
 })
 export class AppModule {}

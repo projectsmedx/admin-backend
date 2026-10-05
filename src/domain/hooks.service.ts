@@ -1,5 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import bcrypt from "bcryptjs";
+import { config } from "../config.js";
 import { DbService } from "../database/db.service.js";
 import { Repo } from "./repository.service.js";
 import { AccessService, HttpError, OWNER_FIELD, SELF_EDITABLE, type Session } from "./access.service.js";
@@ -207,7 +208,9 @@ export class HooksService {
     if (key !== "employees") return;
     if (input.createLogin && !(await this.repo.find("users", { email: String(row.email).toLowerCase() })).length) {
       const role = ["employee", "manager"].includes(String(input.loginRole)) || s.role === "super_admin" ? String(input.loginRole || "employee") : "employee";
-      await this.repo.insert("users", { email: String(row.email).toLowerCase(), name: row.name, role, employeeId: row.id, passwordHash: bcrypt.hashSync(String(input.initialPassword || "Welcome@123"), 10), active: true });
+      const password = String(input.initialPassword || config.defaultUserPassword);
+      if (!password) throw new HttpError(400, "Enter an initial password for the login");
+      await this.repo.insert("users", { email: String(row.email).toLowerCase(), name: row.name, role, employeeId: row.id, passwordHash: bcrypt.hashSync(password, 10), active: true });
     }
     await this.access.notify({ role: "hr" }, "New employee added", `${row.name} (${row.code}) joins on ${row.joiningDate}.`, `/employees/${row.id}`);
   }

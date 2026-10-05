@@ -46,8 +46,9 @@ export class SeederService {
   }
 
   async seed() {
+    if (!config.seedPassword) throw new Error("SEED_PASSWORD is required to seed demo data (or set SEED_ON_START=false)");
     const started = Date.now();
-    const data = generate(config.seedDate ? new Date(`${config.seedDate}T05:00:00Z`) : new Date()) as Obj;
+    const data = generate(config.seedDate ? new Date(`${config.seedDate}T05:00:00Z`) : new Date(), config.seedPassword) as Obj;
     const ids: Record<string, Map<string, string>> = {};
     const map = (col: string, old: unknown) => (typeof old === "string" ? (ids[col]?.get(old) ?? old) : old);
     const empToUser = new Map<string, string>();
@@ -107,7 +108,7 @@ export class SeederService {
         if (rows.length) this.log.log(`${key}: ${rows.length}`);
       }
     });
-    this.log.log(`Demo data seeded in ${((Date.now() - started) / 1000).toFixed(1)}s — sign in with admin@medxpharmacy.com / Password@123`);
+    this.log.log(`Demo data seeded in ${((Date.now() - started) / 1000).toFixed(1)}s — sign in with admin@medxpharmacy.com and SEED_PASSWORD`);
   }
 
   /** Drops every table (used by `npm run db:reset`). */

@@ -2,6 +2,7 @@
 #   docker compose up --build        → everything (API on http://localhost:4000)
 #   docker compose up -d db mailpit  → only the infrastructure (then `npm run start:dev`)
 #
+# Secrets come from .env next to this file (copy .env.example).
 # On first start the API creates all tables (migrations) and seeds data automatically.
 name: medx-api
 
@@ -12,7 +13,7 @@ services:
     environment:
       POSTGRES_DB: medx_hr
       POSTGRES_USER: medx
-      POSTGRES_PASSWORD: medx
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       TZ: Asia/Dubai
     ports:
       - "${DB_PORT:-5433}:5432"
@@ -39,11 +40,12 @@ services:
         condition: service_healthy
     environment:
       PORT: 4000
-      DATABASE_URL: postgres://medx:medx@db:5432/medx_hr
+      DATABASE_URL: postgres://medx:${POSTGRES_PASSWORD}@db:5432/medx_hr
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
-      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-long-random-string-in-production}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       RUN_MIGRATIONS: "true"
       SEED_ON_START: "true"
+      SEED_PASSWORD: ${SEED_PASSWORD:?Set SEED_PASSWORD in .env}
       SMTP_HOST: mailpit
       SMTP_PORT: 1025
       UPLOAD_DIR: /app/uploads

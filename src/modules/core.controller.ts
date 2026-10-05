@@ -11,17 +11,19 @@ import { AccessService, HttpError, type Session } from "../domain/access.service
 import { Repo } from "../domain/repository.service.js";
 import { ACTIONS, type Action, type Resource } from "../domain/rbac.js";
 import { DashboardService } from "./dashboard.service.js";
+import { StorageService } from "../storage/storage.service.js";
 import { sendCsv } from "./support.js";
 
 @Controller()
 export class CoreController {
-  constructor(private readonly db: DbService, private readonly repo: Repo, private readonly access: AccessService, private readonly dashboard: DashboardService) {}
+  constructor(private readonly db: DbService, private readonly repo: Repo, private readonly access: AccessService, private readonly dashboard: DashboardService, private readonly storage: StorageService) {}
 
   @Public()
   @Get("health")
   async health() {
-    const r = await this.db.one<{ now: string }>("SELECT now()::text AS now");
-    return { status: "ok", database: "connected", time: r?.now };
+    // Public endpoint: report connection health only, not the host or user
+    const s = await this.db.status();
+    return { status: "ok", database: "connected", time: s.now, latencyMs: s.latencyMs, version: s.version, pool: s.pool };
   }
 
   @Get("dashboard")
@@ -186,25 +188,29 @@ export class CoreController {
 
   // ----------------------------------------------------------------------- files
   @Post("files")
-  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 15 * 1024 * 1024 } }))
+  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: config.maxUploadMb * 1024 * 1024 } }))
   async upload(@CurrentSession() s: Session, @UploadedFile() file?: { originalname: string; mimetype: string; size: number; buffer: Buffer }) {
     if (!file) throw new HttpError(400, "Attach a file in the `file` field");
     const key = `${new Date().toISOString().slice(0, 7)}/${crypto.randomUUID()}${path.extname(file.originalname)}`;
-    const full = path.resolve(config.uploadDir, key);
-    fs.mkdirSync(path.dirname(full), { recursive: true });
-    fs.writeFileSync(full, file.buffer);
+    await this.storage.put(key, file.buffer, file.mimetype);
     const sum = crypto.createHash("sha256").update(file.buffer).digest("hex");
-    return this.db.one(
-      `INSERT INTO files (storage_key, file_name, mime_type, size_bytes, checksum_sha256, uploaded_by) VALUES ($1,$2,$3,$4,$5,$6)
-       RETURNING id, file_name AS "fileName", mime_type AS "mimeType", size_bytes AS "sizeBytes"`,
-      [key, file.originalname, file.mimetype, file.size, sum, s.userId],
-    );
+    try {
+      return await this.db.one(
+        `INSERT INTO files (storage_key, file_name, mime_type, size_bytes, checksum_sha256, uploaded_by) VALUES ($1,$2,$3,$4,$5,$6)
+         RETURNING id, file_name AS "fileName", mime_type AS "mimeType", size_bytes AS "sizeBytes"`,
+        [key, file.originalname, file.mimetype, file.size, sum, s.userId],
+      );
+    } catch (e) {
+      await this.storage.remove(key).catch(() => undefined); // don't leave an orphaned object behind
+      throw e;
+    }
   }
 
   @Get("files/:id/url")
   async fileUrl(@Param("id") id: string) {
-    const f = await this.db.one("SELECT id FROM files WHERE id=$1", [id]);
+    const f = await this.db.one<{ storage_key: string; file_name: string }>("SELECT storage_key, file_name FROM files WHERE id=$1", [id]);
     if (!f) throw new HttpError(404, "File not found");
+    if (this.storage.driver === "supabase" && !f.storage_key.startsWith("placeholder/")) return { url: await this.storage.signedUrl(f.storage_key, f.file_name), expiresIn: 300 };
     return { url: `/api/v1/files/${id}/download`, expiresIn: 300 };
   }
 
@@ -212,8 +218,11 @@ export class CoreController {
   async download(@Param("id") id: string, @Res() res: Response) {
     const f = await this.db.one<{ storage_key: string; file_name: string; mime_type: string }>("SELECT storage_key, file_name, mime_type FROM files WHERE id=$1", [id]);
     if (!f) throw new HttpError(404, "File not found");
-    const full = path.resolve(config.uploadDir, f.storage_key);
-    if (f.storage_key.startsWith("placeholder/") || !fs.existsSync(full)) throw new HttpError(404, "This file has only metadata (demo data) — upload a real file to download it");
+    if (f.storage_key.startsWith("placeholder/")) throw new HttpError(404, "This file has only metadata (demo data) — upload a real file to download it");
+    // Supabase: send the browser to a short-lived signed link instead of streaming through the API
+    if (this.storage.driver === "supabase") return res.redirect(302, await this.storage.signedUrl(f.storage_key, f.file_name));
+    const full = this.storage.localPath(f.storage_key);
+    if (!full) throw new HttpError(404, "File not found in storage");
     res.setHeader("Content-Type", f.mime_type);
     res.setHeader("Content-Disposition", `attachment; filename="${f.file_name}"`);
     fs.createReadStream(full).pipe(res);

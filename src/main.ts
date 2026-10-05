@@ -13,6 +13,7 @@ import { DbService } from "./database/db.service.js";
 import { MigratorService } from "./database/migrator.service.js";
 import { SeederService } from "./database/seed/seeder.service.js";
 import { AccessService } from "./domain/access.service.js";
+import { StorageService } from "./storage/storage.service.js";
 import { HttpExceptionFilter } from "./common/http-exception.filter.js";
 
 async function bootstrap() {
@@ -29,7 +30,9 @@ async function bootstrap() {
   // 1) connect  2) create/upgrade tables  3) seed demo data when empty  4) load the permission matrix
   const db = app.get(DbService);
   await db.waitUntilReady();
-  log.log("Connected to PostgreSQL");
+  const s = await db.status();
+  log.log(`Connected to PostgreSQL · ${s.host}:${s.port}/${s.database} as ${s.user} · ${s.version} · SSL ${s.ssl ? "on" : "off"} · ${s.tables} tables · ${s.latencyMs} ms`);
+  log.log(`File storage · ${await app.get(StorageService).status()}`);
   if (config.runMigrations) await app.get(MigratorService).run();
   await app.get(SeederService).runIfEmpty();
   await app.get(AccessService).loadPermissions();

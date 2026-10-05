@@ -9,12 +9,20 @@ if (fs.existsSync(".env")) {
   }
 }
 const env = (k: string, d?: string) => process.env[k] ?? d ?? "";
+// Secrets have no fallback: the app refuses to start without them
+const required = (k: string) => {
+  const v = process.env[k];
+  if (!v) throw new Error(`Missing required environment variable ${k} (see .env.example)`);
+  return v;
+};
 
 export const config = {
   port: Number(env("PORT", "4000")),
-  databaseUrl: env("DATABASE_URL", "postgres://medx:medx@localhost:5433/medx_hr"),
+  databaseUrl: required("DATABASE_URL"),
+  // "auto" (default): SSL for any host other than localhost; "true"/"false" to force
+  databaseSsl: env("DATABASE_SSL", "auto"),
   frontendUrl: env("FRONTEND_URL", "http://localhost:3000"),
-  jwtSecret: env("JWT_SECRET", "dev-only-change-me-medx-hr-jwt-secret-32+chars"),
+  jwtSecret: required("JWT_SECRET"),
   accessTtlMinutes: Number(env("ACCESS_TOKEN_TTL_MINUTES", "15")),
   refreshTtlDays: Number(env("REFRESH_TOKEN_TTL_DAYS", "7")),
   cookieSecure: env("COOKIE_SECURE", "false") === "true",
@@ -22,6 +30,12 @@ export const config = {
   runMigrations: env("RUN_MIGRATIONS", "true") !== "false",
   seedOnStart: env("SEED_ON_START", "true") !== "false",
   seedDate: env("SEED_DATE"),
+  // Password given to every demo account when seeding; only needed when SEED_ON_START=true
+  seedPassword: env("SEED_PASSWORD"),
+  // Initial password for logins created from the employee form when none is entered
+  defaultUserPassword: env("DEFAULT_USER_PASSWORD"),
+  // Domain for work emails generated when a hired candidate becomes an employee
+  companyEmailDomain: env("COMPANY_EMAIL_DOMAIN", "medxpharmacy.com"),
   smtp: {
     host: env("SMTP_HOST", "localhost"),
     port: Number(env("SMTP_PORT", "1025")),
@@ -30,5 +44,12 @@ export const config = {
     secure: env("SMTP_SECURE", "false") === "true",
     from: env("MAIL_FROM", "MedxDashboard <hr@medxpharmacy.com>"),
   },
+  // Files: Supabase Storage when SUPABASE_URL is set, otherwise the local UPLOAD_DIR
+  storage: {
+    supabaseUrl: env("SUPABASE_URL"),
+    serviceRoleKey: env("SUPABASE_SERVICE_ROLE_KEY"),
+    bucket: env("SUPABASE_BUCKET"),
+  },
+  maxUploadMb: Number(env("MAX_UPLOAD_MB", "50")),
   uploadDir: env("UPLOAD_DIR", "./uploads"),
 };

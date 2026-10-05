@@ -2,7 +2,6 @@
 // Generates the same demo organization relative to `today` so the data always looks current.
 import bcrypt from "bcryptjs";
 
-const PASSWORD = "Password@123";
 const ANCHOR = Date.parse("2026-10-01T00:00:00Z");
 
 /** UAE public holidays for a year. Islamic dates are approximate (≈11 days earlier each year) and should be confirmed by HR. */
@@ -26,7 +25,7 @@ function uaeHolidays(year) {
   ].map((h) => ({ notes: "", ...h, locationId: "All", country: "UAE", optional: false }));
 }
 
-export function generate(TODAY = new Date()) {
+export function generate(TODAY = new Date(), PASSWORD) {
   TODAY = new Date(Date.UTC(TODAY.getUTCFullYear(), TODAY.getUTCMonth(), TODAY.getUTCDate(), 5, 0, 0));
   const Y = TODAY.getUTCFullYear();
   const LAST_MONTH = new Date(Date.UTC(Y, TODAY.getUTCMonth() - 1, 1));
@@ -43,7 +42,6 @@ export function generate(TODAY = new Date()) {
     return s.length === 10 ? d.toISOString().slice(0, 10) : d.toISOString();
   };
 
-  const PASSWORD = "Password@123";
   
   let seed = 42;
   const rand = () => {

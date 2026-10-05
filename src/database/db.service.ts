@@ -9,6 +9,14 @@ pg.types.setTypeParser(1700, (v) => (v === null ? null : Number(v)));
 pg.types.setTypeParser(20, (v) => (v === null ? null : Number(v)));
 pg.types.setTypeParser(1083, (v) => (v ? v.slice(0, 5) : v));
 
+// Hosted databases (Supabase, Render) need SSL; a local docker Postgres does not.
+// The connection is encrypted; the certificate is not verified because Supabase signs it with its own CA.
+function useSsl() {
+  if (config.databaseSsl !== "auto") return config.databaseSsl === "true";
+  const host = new URL(config.databaseUrl).hostname;
+  return !["localhost", "127.0.0.1", "::1", "postgres", "db"].includes(host);
+}
+
 /**
  * Thin wrapper over node-postgres. `tx()` opens a transaction that every `query()` inside the
  * callback joins automatically (AsyncLocalStorage), so services never pass clients around.
@@ -16,7 +24,7 @@ pg.types.setTypeParser(1083, (v) => (v ? v.slice(0, 5) : v));
 @Injectable()
 export class DbService implements OnModuleDestroy {
   private readonly log = new Logger("Database");
-  readonly pool = new pg.Pool({ connectionString: config.databaseUrl, max: 15 });
+  readonly pool = new pg.Pool({ connectionString: config.databaseUrl, max: 15, ssl: useSsl() ? { rejectUnauthorized: false } : false });
   private readonly als = new AsyncLocalStorage<{ client: pg.PoolClient; chain: Promise<unknown> }>();
 
   async query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
@@ -60,6 +68,33 @@ export class DbService implements OnModuleDestroy {
       }
     }
     throw new Error("Could not connect to PostgreSQL. Check DATABASE_URL.");
+  }
+
+  /** Connection details for logs and the health check. The password is never included. */
+  async status() {
+    const started = Date.now();
+    const client = await this.pool.connect();
+    let r: { version: string; database: string; user: string; tables: number; now: string };
+    let ssl: boolean;
+    try {
+      ({ rows: [r] } = await client.query(
+        `SELECT split_part(version(), ' on ', 1) AS version, current_database() AS database, current_user AS user,
+                (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public') AS tables, now()::text AS now`,
+      ));
+      // Is this app's own link encrypted? (pg_stat_ssl would only describe the pooler's link behind Supabase)
+      ssl = Boolean((client as unknown as { connection: { stream: { encrypted?: boolean } } }).connection.stream.encrypted);
+    } finally {
+      client.release();
+    }
+    const url = new URL(config.databaseUrl);
+    return {
+      host: url.hostname,
+      port: Number(url.port || 5432),
+      latencyMs: Date.now() - started,
+      pool: { total: this.pool.totalCount, idle: this.pool.idleCount, waiting: this.pool.waitingCount },
+      ssl,
+      ...r,
+    };
   }
 
   async onModuleDestroy() {

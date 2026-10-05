@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MANIFEST = path.join(ROOT, "backups/presentation-data.json");
 const API = process.env.API ?? "http://localhost:4000/api/v1";
-const ADMIN = { email: process.env.ADMIN_EMAIL ?? "admin@medxpharmacy.com", password: process.env.ADMIN_PASSWORD ?? "Password@123" };
+const ADMIN = { email: process.env.ADMIN_EMAIL ?? "admin@medxpharmacy.com", password: process.env.ADMIN_PASSWORD };
+if (!ADMIN.password) throw new Error("Set ADMIN_PASSWORD, e.g. ADMIN_PASSWORD=... npm run demo:add");
 const require = createRequire(path.join(ROOT, "package.json"));
 
 // ----------------------------------------------------------------------------- helpers
