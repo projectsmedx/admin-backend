@@ -1,32 +1,51 @@
 import { Injectable, Logger } from "@nestjs/common";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import bcrypt from "bcryptjs";
 import { DbService } from "../db.service.js";
 import { Repo } from "../../domain/repository.service.js";
 import { PERMISSIONS, ROLES, ROLE_LABELS } from "../../domain/rbac.js";
 import { config } from "../../config.js";
-import { generate } from "./generate.js";
+import { reference } from "./reference.js";
 
 type Obj = Record<string, any>;
 
-// Fields that reference another collection (by the generator's human-readable ids)
-const REFS: Record<string, string> = {
-  employeeId: "employees", managerId: "employees", departmentId: "departments", designationId: "designations", locationId: "locations",
-  shiftId: "shifts", leaveTypeId: "leaveTypes", jobId: "jobs", candidateId: "candidates", interviewerId: "employees", recruiterId: "employees",
-  hiringManagerId: "employees", assignedTo: "employees", ownerId: "employees", reviewerId: "employees", authorId: "employees", givenBy: "employees",
-  buddyId: "employees", currentDesignationId: "designations", newDesignationId: "designations", reviewedBy: "employees", userId: "users",
-};
-// Generator stores these as employee ids; the database references users
-const EMPLOYEE_TO_USER = ["createdBy", "approvedBy", "uploadedBy"];
-// Collections whose generator id becomes the human-readable `code`
-const KEEP_CODE = new Set(["employees", "leaves", "jobs", "candidates", "tickets", "expenses", "assets", "cases"]);
+/** One company employee in data/employees.json. Department and designation are matched by name (created if new). */
+interface SeedEmployee {
+  code: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  department: string;
+  designation: string;
+  role: string;
+  managerCode?: string;
+  jobRole?: string;
+  engagementType?: "internal" | "outsource" | "other";
+  branch?: string;
+  joiningDate?: string;
+}
 
-const ORDER = [
-  "locations", "departments", "designations", "shifts", "leaveTypes", "holidays", "employees", "users", "leaves", "attendance",
-  "attendanceCorrections", "timesheets", "documents", "payrollRuns", "loans", "salaryRevisions", "jobs", "candidates", "interviews",
-  "offers", "onboarding", "goals", "reviews", "kpis", "expenses", "assets", "trainings", "tickets", "announcements", "offboarding",
-  "settlements", "cases", "recognitions", "surveys", "notifications", "auditLogs",
-];
+const EMPLOYEES_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), "../data/employees.json");
+// Reference collections, in insert order; their ids ("DEP-1") are mapped to database ids as they are created
+const ORDER = ["locations", "departments", "designations", "shifts", "leaveTypes", "holidays"];
+const REFS: Record<string, string> = { departmentId: "departments", locationId: "locations" };
 
-/** Loads the demo organization into an empty database. */
+/** 12 characters with upper, lower and a digit; no look-alike characters. */
+function randomPassword() {
+  const sets = ["ABCDEFGHJKLMNPQRSTUVWXYZ", "abcdefghijkmnpqrstuvwxyz", "23456789"];
+  const all = sets.join("");
+  const chars = [...sets.map((s) => s[crypto.randomInt(s.length)]), ...Array.from({ length: 9 }, () => all[crypto.randomInt(all.length)])];
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = crypto.randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
+}
+
+/** Loads the company setup and the real employees (data/employees.json) into an empty database. */
 @Injectable()
 export class SeederService {
   private readonly log = new Logger("Seed");
@@ -39,34 +58,18 @@ export class SeederService {
   async runIfEmpty() {
     if (!config.seedOnStart) return;
     if (!(await this.isEmpty())) {
-      this.log.log("Database already has data — skipping demo seed");
+      this.log.log("Database already has data — skipping seed");
       return;
     }
     await this.seed();
   }
 
   async seed() {
-    if (!config.seedPassword) throw new Error("SEED_PASSWORD is required to seed demo data (or set SEED_ON_START=false)");
     const started = Date.now();
-    const data = generate(config.seedDate ? new Date(`${config.seedDate}T05:00:00Z`) : new Date(), config.seedPassword) as Obj;
+    const data = reference(config.seedDate ? new Date(`${config.seedDate}T05:00:00Z`) : new Date()) as Obj;
+    const people = JSON.parse(fs.readFileSync(EMPLOYEES_FILE, "utf8")) as SeedEmployee[];
     const ids: Record<string, Map<string, string>> = {};
-    const map = (col: string, old: unknown) => (typeof old === "string" ? (ids[col]?.get(old) ?? old) : old);
-    const empToUser = new Map<string, string>();
-
-    const translate = (key: string, row: Obj): Obj => {
-      const out: Obj = {};
-      for (const [k, v] of Object.entries(row)) {
-        if (k === "id") continue;
-        if (REFS[k]) out[k] = map(REFS[k], v);
-        else if (EMPLOYEE_TO_USER.includes(k)) out[k] = typeof v === "string" ? (empToUser.get(map("employees", v) as string) ?? null) : v;
-        else if (k === "enrolled") out[k] = (v as string[]).map((x) => map("employees", x));
-        else if ((k === "approvals" || k === "comments") && Array.isArray(v)) out[k] = (v as Obj[]).map((a) => ({ ...a, by: map("employees", a.by) }));
-        else if (k === "items") out[k] = (v as Obj[]).map((i) => ({ ...i, employeeId: map("employees", i.employeeId) }));
-        else out[k] = v;
-      }
-      if (KEEP_CODE.has(key)) out.code = row.id;
-      return out;
-    };
+    const logins: { code: string; name: string; email: string; role: string; password: string }[] = [];
 
     await this.db.tx(async () => {
       // Roles & permission matrix
@@ -89,26 +92,47 @@ export class SeederService {
       }
 
       for (const key of ORDER) {
-        const rows = (data[key] ?? []) as Obj[];
         ids[key] = new Map();
-        const bulk = ["attendance", "documents", "timesheets", "kpis", "auditLogs", "notifications"].includes(key);
-        for (const row of rows) {
-          let input = translate(key, row);
-          if (key === "departments") input = { ...input, managerId: null };
-          if (key === "payrollRuns") input = { ...input, workingDays: input.workingDays ?? 22, approvedBy: input.approvedBy ?? null };
-          if (key === "employees" && input.status === "Resigned") input.lastWorkingDay = row.lastWorkingDay;
-          if (key === "notifications" && typeof row.userId === "string" && !ids.users.has(row.userId)) continue;
-          const created = await this.repo.insert(key, input, { fetch: !bulk });
-          ids[key].set(row.id, created.id);
-          if (key === "users" && input.employeeId) empToUser.set(input.employeeId, created.id);
+        for (const row of data[key] as Obj[]) {
+          const input: Obj = {};
+          for (const [k, v] of Object.entries(row)) if (k !== "id") input[k] = REFS[k] ? (ids[REFS[k]]?.get(v as string) ?? null) : v;
+          ids[key].set(row.id, (await this.repo.insert(key, input, { fetch: false })).id);
         }
-        if (key === "employees") {
-          for (const d of data.departments as Obj[]) if (d.managerId) await this.db.query("UPDATE departments SET manager_id=$2 WHERE id=$1", [ids.departments.get(d.id), ids.employees.get(d.managerId)]);
-        }
-        if (rows.length) this.log.log(`${key}: ${rows.length}`);
+        this.log.log(`${key}: ${ids[key].size}`);
       }
+
+      // Employees, each with a login: username = employee code, unique random password
+      const byName = async (table: "departments" | "designations", col: "name" | "title", value: string, extra: Obj) => {
+        const found = await this.db.one<{ id: string }>(`SELECT id FROM ${table} WHERE lower(${col}) = lower($1)`, [value]);
+        return found?.id ?? (await this.repo.insert(table, { [col]: value, ...extra }, { fetch: false })).id;
+      };
+      const shiftId = ids.shifts.values().next().value;
+      const today = new Date(Date.now() + 4 * 3600000).toISOString().slice(0, 10);
+      const colors = ["#6366f1", "#ec4899", "#14b8a6", "#f97316", "#0ea5e9"];
+      const empId = new Map<string, string>();
+      for (const [n, p] of people.entries()) {
+        const departmentId = await byName("departments", "name", p.department, { code: p.department.replace(/[^A-Za-z]/g, "").slice(0, 3).toUpperCase() + n });
+        const designationId = await byName("designations", "title", p.designation, { level: p.jobRole || "Staff", departmentId });
+        const location = p.branch ? await this.db.one<{ id: string }>("SELECT id FROM locations WHERE lower(name) = lower($1)", [p.branch]) : undefined;
+        const emp = await this.repo.insert("employees", {
+          code: p.code, firstName: p.firstName, lastName: p.lastName, email: p.email.toLowerCase(), departmentId, designationId, locationId: location?.id ?? null,
+          jobRole: p.jobRole || null, engagementType: p.engagementType || "internal", employmentType: "Full-time", workMode: "Office", status: "Active",
+          joiningDate: p.joiningDate || today, avatarColor: colors[n % colors.length], shiftId,
+        });
+        empId.set(p.code, emp.id);
+        const password = randomPassword();
+        await this.repo.insert("users", { username: p.code, userType: "Employee", email: p.email.toLowerCase(), name: `${p.firstName} ${p.lastName}`, role: p.role, employeeId: emp.id, passwordHash: bcrypt.hashSync(password, 10), passwordChangedAt: new Date().toISOString(), active: true }, { fetch: false });
+        logins.push({ code: p.code, name: `${p.firstName} ${p.lastName}`, email: p.email.toLowerCase(), role: p.role, password });
+      }
+      for (const p of people) if (p.managerCode) await this.db.query("UPDATE employees SET manager_id=$1 WHERE id=$2", [empId.get(p.managerCode), empId.get(p.code)]);
+      this.log.log(`employees: ${people.length}`);
     });
-    this.log.log(`Demo data seeded in ${((Date.now() - started) / 1000).toFixed(1)}s — sign in with admin@medxpharmacy.com and SEED_PASSWORD`);
+
+    // Passwords exist only in this file; it is written next to the project folder, outside the git repos
+    const file = path.resolve(process.cwd(), "..", `medx-logins-${new Date().toISOString().slice(0, 10)}.csv`);
+    const csv = ["Username,Name,Email,Access role,Password", ...logins.map((l) => [l.code, l.name, l.email, ROLE_LABELS[l.role as keyof typeof ROLE_LABELS] ?? l.role, l.password].map((v) => `"${v.replace(/"/g, '""')}"`).join(","))].join("\n");
+    fs.writeFileSync(file, csv + "\n", { mode: 0o600 });
+    this.log.log(`Seeded in ${((Date.now() - started) / 1000).toFixed(1)}s — logins saved to ${file}`);
   }
 
   /** Drops every table (used by `npm run db:reset`). */

@@ -4,6 +4,6 @@
   "sourceRoot": "src",
   "compilerOptions": {
     "deleteOutDir": true,
-    "assets": [{ "include": "database/migrations/*.sql", "watchAssets": true }]
+    "assets": [{ "include": "database/migrations/*.sql", "watchAssets": true }, { "include": "database/data/*.json", "watchAssets": true }]
   }
 }

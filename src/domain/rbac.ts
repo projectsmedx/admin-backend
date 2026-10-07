@@ -1,16 +1,21 @@
 // Role-based access control shared by server (API enforcement) and client (UI gating).
 
-export const ROLES = ["super_admin", "hr_admin", "hr_manager", "finance", "manager", "employee"] as const;
+// super_admin is shown as "Admin"; the key stays because code and existing data rely on it
+export const ROLES = ["super_admin", "manager", "pharmacist", "developer", "marketing", "customer_support"] as const;
 export type Role = (typeof ROLES)[number];
 
 export const ROLE_LABELS: Record<Role, string> = {
-  super_admin: "Super Admin",
-  hr_admin: "HR Admin",
-  hr_manager: "HR Manager",
-  finance: "Finance",
+  super_admin: "Admin",
   manager: "Manager",
-  employee: "Employee",
+  pharmacist: "Pharmacist",
+  developer: "Developer",
+  marketing: "Marketing",
+  customer_support: "Customer Support",
 };
+
+/** Role key from a key ("customer_support") or label ("Customer Support"); undefined if unknown. */
+export const roleKey = (v: unknown): Role | undefined =>
+  ROLES.find((r) => r === v || ROLE_LABELS[r].toLowerCase() === String(v ?? "").trim().toLowerCase());
 
 export const ACTIONS = ["view", "create", "edit", "delete", "approve", "export", "manage"] as const;
 export type Action = (typeof ACTIONS)[number];
@@ -61,110 +66,30 @@ const ALL_RESOURCES: Resource[] = [
   "users", "settings", "reports", "analytics",
 ];
 
-const HR_CORE = "view,create,edit,delete,approve,export";
+// Self-service: own profile, leave, attendance, payslips, expenses, documents and helpdesk
+const SELF: PermissionMatrix = {
+  ...COMMON,
+  employees: g("view,edit", "own"),
+  leaves: g("view,create,edit", "own"),
+  attendance: g("view,create", "own"),
+  attendanceCorrections: g("view,create", "own"),
+  timesheets: g("view,create,edit", "own"),
+  documents: g("view,create", "own"),
+  payrollRuns: g("view", "own"),
+  loans: g("view", "own"),
+  goals: g("view,edit", "own"),
+  reviews: g("view,edit", "own"),
+  kpis: g("view", "own"),
+  expenses: g("view,create", "own"),
+  assets: g("view", "own"),
+  tickets: g("view,create,edit", "own"),
+  offboarding: g("view,create", "own"),
+  salaryRevisions: g("view", "own"),
+  onboarding: g("view,edit", "own"),
+};
 
 export const PERMISSIONS: Record<Role, PermissionMatrix> = {
   super_admin: Object.fromEntries(ALL_RESOURCES.map((r) => [r, g("*")])),
-
-  hr_admin: {
-    ...COMMON,
-    employees: g(HR_CORE),
-    compensation: g("view"),
-    departments: g("view,create,edit,delete"),
-    designations: g("view,create,edit,delete"),
-    locations: g("view,create,edit"),
-    shifts: g("view,create,edit,delete"),
-    holidays: g("view,create,edit,delete"),
-    leaveTypes: g("view,create,edit"),
-    leaves: g(HR_CORE),
-    attendance: g(HR_CORE),
-    attendanceCorrections: g("view,create,edit,approve"),
-    timesheets: g("view,approve,export"),
-    documents: g(HR_CORE),
-    payrollRuns: g("view"),
-    salaryRevisions: g("view,create"),
-    jobs: g(HR_CORE),
-    candidates: g(HR_CORE),
-    interviews: g(HR_CORE),
-    offers: g(HR_CORE),
-    onboarding: g(HR_CORE),
-    goals: g("view,create,edit"),
-    reviews: g("view,create,edit"),
-    kpis: g("view,create,edit"),
-    expenses: g("view,create"),
-    assets: g("view,create,edit,delete,export"),
-    trainings: g("view,create,edit,delete"),
-    tickets: g(HR_CORE),
-    announcements: g("view,create,edit,delete"),
-    offboarding: g(HR_CORE),
-    cases: g("view,create,edit"),
-    recognitions: g("view,create,edit,delete"),
-    surveys: g("view,create,edit"),
-    reports: g("view,export"),
-  },
-
-  hr_manager: {
-    ...COMMON,
-    employees: g(HR_CORE),
-    compensation: g("view,edit"),
-    departments: g("view,create,edit,delete"),
-    designations: g("view,create,edit,delete"),
-    locations: g("view,create,edit,delete"),
-    shifts: g("view,create,edit,delete"),
-    holidays: g("view,create,edit,delete"),
-    leaveTypes: g("view,create,edit,delete"),
-    leaves: g(HR_CORE),
-    attendance: g(HR_CORE),
-    attendanceCorrections: g("view,create,edit,approve"),
-    timesheets: g("view,approve,export"),
-    documents: g(HR_CORE),
-    payrollRuns: g("view,approve,export"),
-    loans: g("view,approve"),
-    salaryRevisions: g("view,create,edit,approve"),
-    settlements: g("view,create,approve"),
-    jobs: g(HR_CORE),
-    candidates: g(HR_CORE),
-    interviews: g(HR_CORE),
-    offers: g(HR_CORE),
-    onboarding: g(HR_CORE),
-    goals: g(HR_CORE),
-    reviews: g(HR_CORE),
-    kpis: g(HR_CORE),
-    expenses: g("view,approve,export"),
-    assets: g("view,create,edit,export"),
-    trainings: g("view,create,edit,delete"),
-    tickets: g(HR_CORE),
-    announcements: g("view,create,edit,delete"),
-    offboarding: g(HR_CORE),
-    cases: g("*"),
-    recognitions: g("view,create,edit,delete"),
-    surveys: g("view,create,edit,delete"),
-    auditLogs: g("view,export"),
-    users: g("view"),
-    settings: g("view,edit"),
-    reports: g("view,export"),
-    analytics: g("view"),
-  },
-
-  finance: {
-    ...COMMON,
-    employees: g("view,export"),
-    compensation: g("view,edit"),
-    attendance: g("view,export"),
-    leaves: g("view"),
-    payrollRuns: g("*"),
-    loans: g(HR_CORE),
-    salaryRevisions: g("view,approve,export"),
-    settlements: g(HR_CORE),
-    expenses: g(HR_CORE),
-    assets: g("view,export"),
-    timesheets: g("view,export"),
-    documents: g("view", "own"),
-    tickets: g("view,create", "own"),
-    goals: g("view", "own"),
-    reports: g("view,export"),
-    analytics: g("view"),
-  },
 
   manager: {
     ...COMMON,
@@ -192,25 +117,17 @@ export const PERMISSIONS: Record<Role, PermissionMatrix> = {
     reports: g("view", "team"),
   },
 
-  employee: {
-    ...COMMON,
-    employees: g("view,edit", "own"),
-    leaves: g("view,create,edit", "own"),
-    attendance: g("view,create", "own"),
-    attendanceCorrections: g("view,create", "own"),
-    timesheets: g("view,create,edit", "own"),
-    documents: g("view,create", "own"),
-    payrollRuns: g("view", "own"),
-    loans: g("view", "own"),
-    goals: g("view,edit", "own"),
-    reviews: g("view,edit", "own"),
-    kpis: g("view", "own"),
-    expenses: g("view,create", "own"),
-    assets: g("view", "own"),
-    tickets: g("view,create,edit", "own"),
-    offboarding: g("view,create", "own"),
-    salaryRevisions: g("view", "own"),
-    onboarding: g("view,edit", "own"),
+  pharmacist: SELF,
+  developer: SELF,
+  marketing: {
+    ...SELF,
+    announcements: g("view,create,edit,delete"),
+    recognitions: g("view,create,edit"),
+    surveys: g("view,create,edit"),
+  },
+  customer_support: {
+    ...SELF,
+    tickets: g("view,create,edit,approve,export"),
   },
 };
 
@@ -227,7 +144,8 @@ export function scopeOf(role: Role, resource: Resource): Scope | null {
   return grantFor(role, resource)?.scope ?? null;
 }
 
-export const isHR = (role?: Role) => role === "super_admin" || role === "hr_admin" || role === "hr_manager";
+/** HR work (payroll, balances, exits) is done by Admin. */
+export const isHR = (role?: Role) => role === "super_admin";
 
 /** Resources whose permissions can be configured in the roles/role_permissions tables. */
 export const ALL_RESOURCE_KEYS = Object.keys(PERMISSIONS.super_admin) as Resource[];

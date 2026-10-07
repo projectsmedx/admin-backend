@@ -4,12 +4,14 @@ import { DbService } from "../database/db.service.js";
 import { CurrentSession } from "../auth/auth.guard.js";
 import { AccessService, HttpError, type Session } from "../domain/access.service.js";
 import { Repo } from "../domain/repository.service.js";
+import { MEDIA_MIME, MEDIA_SLOT } from "../domain/media.js";
 import { isUuid } from "../domain/resources.js";
+import { StorageService } from "../storage/storage.service.js";
 import { mutate, sendCsv, todayIso } from "./support.js";
 
 @Controller()
 export class PeopleController {
-  constructor(private readonly db: DbService, private readonly repo: Repo, private readonly access: AccessService) {}
+  constructor(private readonly db: DbService, private readonly repo: Repo, private readonly access: AccessService, private readonly storage: StorageService) {}
 
   private tx<T>(fn: () => Promise<T>) {
     return this.db.tx(fn);
@@ -72,6 +74,67 @@ export class PeopleController {
          UNION SELECT id::text FROM documents WHERE employee_id=$1)) ORDER BY created_at DESC LIMIT 100`,
       [id],
     );
+  }
+
+  // ----------------------------------------------------------------------- employee media (photo, ID / passport / visa scans, degrees…)
+  private media(employeeId: string, id?: string) {
+    return this.db.query(
+      `SELECT m.id, m.slot, m.note, m.created_at AS "createdAt", f.id AS "fileId", f.file_name AS "fileName", f.mime_type AS "mimeType", f.size_bytes AS "sizeBytes",
+              u.display_name AS "uploadedBy", '/api/v1/files/' || f.id || '/download' AS url
+       FROM employee_media m JOIN files f ON f.id = m.file_id LEFT JOIN users u ON u.id = m.uploaded_by
+       WHERE m.employee_id = $1 ${id ? "AND m.id = $2" : ""} ORDER BY m.created_at`,
+      id ? [employeeId, id] : [employeeId],
+    );
+  }
+
+  @Get("employees/:id/media")
+  async listMedia(@CurrentSession() s: Session, @Param("id") id: string) {
+    await this.access.assertMediaAccess(s, id);
+    return this.media(id);
+  }
+
+  @Post("employees/:id/media")
+  async addMedia(@CurrentSession() s: Session, @Param("id") id: string, @Body() b: { slot: string; fileId: string; note?: string }) {
+    const slot = MEDIA_SLOT.get(b?.slot);
+    if (!slot) throw new HttpError(400, "Unknown media type");
+    if (!isUuid(b.fileId)) throw new HttpError(400, "fileId (from POST /files) is required");
+    await this.access.assertMediaAccess(s, id, { edit: true });
+    const file = await this.db.one<{ mime_type: string; uploaded_by: string | null; storage_key: string }>("SELECT mime_type, uploaded_by, storage_key FROM files WHERE id=$1", [b.fileId]);
+    if (!file || file.uploaded_by !== s.userId) throw new HttpError(400, "Upload the file first");
+    if (!MEDIA_MIME.test(file.mime_type)) {
+      // Don't keep a rejected upload in the bucket
+      await this.db.query("DELETE FROM files WHERE id=$1", [b.fileId]);
+      await this.storage.remove(file.storage_key).catch(() => undefined);
+      throw new HttpError(400, "Only images (JPG, PNG, WEBP, HEIC) and PDF files are allowed");
+    }
+    const replaced: { storage_key: string }[] = [];
+    const row = await this.tx(async () => {
+      if (!slot.multiple) {
+        // Single slot: the new file replaces the old one
+        replaced.push(...(await this.db.query<{ storage_key: string }>(
+          "DELETE FROM files WHERE id IN (SELECT file_id FROM employee_media WHERE employee_id=$1 AND slot=$2) RETURNING storage_key", [id, slot.key])));
+      }
+      const r = await this.db.one<{ id: string }>("INSERT INTO employee_media (employee_id, slot, file_id, note, uploaded_by) VALUES ($1,$2,$3,$4,$5) RETURNING id", [id, slot.key, b.fileId, b.note || null, s.userId]);
+      if (slot.key === "profile_photo") await this.db.query("UPDATE employees SET avatar_file_id=$1 WHERE id=$2", [b.fileId, id]);
+      await this.access.audit(s, "Employee Media Uploaded", "employees", id, { type: slot.label });
+      return r!;
+    });
+    for (const f of replaced) await this.storage.remove(f.storage_key).catch(() => undefined);
+    return (await this.media(id, row.id))[0];
+  }
+
+  @Delete("employees/:id/media/:mediaId")
+  async removeMedia(@CurrentSession() s: Session, @Param("id") id: string, @Param("mediaId") mediaId: string) {
+    await this.access.assertMediaAccess(s, id, { edit: true });
+    const m = await this.db.one<{ slot: string; file_id: string; storage_key: string }>(
+      "SELECT m.slot, m.file_id, f.storage_key FROM employee_media m JOIN files f ON f.id = m.file_id WHERE m.id=$1 AND m.employee_id=$2", [mediaId, id]);
+    if (!m) throw new HttpError(404, "File not found");
+    await this.tx(async () => {
+      await this.db.query("DELETE FROM files WHERE id=$1", [m.file_id]); // cascades to employee_media; clears employees.avatar_file_id
+      await this.access.audit(s, "Employee Media Removed", "employees", id, { type: MEDIA_SLOT.get(m.slot)?.label ?? m.slot });
+    });
+    await this.storage.remove(m.storage_key).catch(() => undefined);
+    return { ok: true };
   }
 
   // ----------------------------------------------------------------------- onboarding / exits / goals / reviews
