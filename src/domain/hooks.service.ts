@@ -5,7 +5,7 @@ import { DbService } from "../database/db.service.js";
 import { Repo } from "./repository.service.js";
 import { AccessService, HttpError, OWNER_FIELD, SELF_EDITABLE, type Session } from "./access.service.js";
 import type { Row } from "./resources.js";
-import type { Resource } from "./rbac.js";
+import { roleKey, type Resource } from "./rbac.js";
 import { leaveBalances, payrollTotals, recomputeItem, salaryTotal, workingDays, type LeaveLite, type LeaveTypeLite, type PayrollItem, type Salary } from "./hr.js";
 
 type Data = Record<string, any>;
@@ -72,7 +72,8 @@ export class HooksService {
         probation.setMonth(probation.getMonth() + 6);
         const sal = (data.salary as Partial<Salary>) ?? {};
         if (!this.access.can(s.role, "compensation", "edit") && !this.access.can(s.role, "employees", "create")) delete data.salary;
-        delete data.createLogin; delete data.loginRole; delete data.initialPassword;
+        if (data.role !== undefined && data.role !== "" && !roleKey(data.role)) throw new HttpError(400, `Unknown role "${data.role}"`);
+        delete data.createLogin; delete data.loginRole; delete data.initialPassword; delete data.loginUsername; delete data.role;
         return {
           ...data,
           status: data.status || "Probation",
@@ -90,7 +91,10 @@ export class HooksService {
         if (String(data.password).length < 8) throw new HttpError(400, "Password must be at least 8 characters");
         if (data.role === "super_admin" && s.role !== "super_admin") throw new HttpError(403, "Only a Super Admin can create Super Admins");
         const emp = data.employeeId ? await this.repo.get("employees", data.employeeId) : undefined;
-        const out: Data = { ...data, email: String(data.email).toLowerCase(), passwordHash: bcrypt.hashSync(String(data.password), 10), name: data.name || emp?.name || data.email, active: data.active ?? true };
+        if (emp && (await this.repo.find("users", { employeeId: emp.id })).length) throw new HttpError(409, `${emp.name} already has a login`);
+        // Employee accounts sign in with their employee code; other accounts with the part of the email before @
+        const username = await this.validUsername(data.username || emp?.code || String(data.email).split("@")[0]);
+        const out: Data = { ...data, username, userType: emp ? "Employee" : data.userType || "Other", email: String(data.email).toLowerCase(), passwordHash: bcrypt.hashSync(String(data.password), 10), name: data.name || emp?.name || data.email, active: data.active ?? true };
         delete out.password;
         return out;
       }
@@ -207,10 +211,10 @@ export class HooksService {
   async afterCreate(key: string, row: Row, input: Data, s: Session) {
     if (key !== "employees") return;
     if (input.createLogin && !(await this.repo.find("users", { email: String(row.email).toLowerCase() })).length) {
-      const role = ["employee", "manager"].includes(String(input.loginRole)) || s.role === "super_admin" ? String(input.loginRole || "employee") : "employee";
+      const role = roleKey(input.role ?? input.loginRole) ?? "developer";
       const password = String(input.initialPassword || config.defaultUserPassword);
       if (!password) throw new HttpError(400, "Enter an initial password for the login");
-      await this.repo.insert("users", { email: String(row.email).toLowerCase(), name: row.name, role, employeeId: row.id, passwordHash: bcrypt.hashSync(password, 10), active: true });
+      await this.repo.insert("users", { username: await this.validUsername(String(input.loginUsername || row.code)), userType: "Employee", email: String(row.email).toLowerCase(), name: row.name, role, employeeId: row.id, passwordHash: bcrypt.hashSync(password, 10), active: true });
     }
     await this.access.notify({ role: "hr" }, "New employee added", `${row.name} (${row.code}) joins on ${row.joiningDate}.`, `/employees/${row.id}`);
   }
@@ -219,7 +223,11 @@ export class HooksService {
     let patch: Data = { ...input };
     const newCode = key === "employees" && typeof patch.code === "string" && patch.code.trim() && patch.code.trim().toUpperCase() !== String(record.code).toUpperCase() && this.access.can(s.role, "employees", "create") ? await this.validEmployeeCode(patch.code, record.id) : null;
     for (const k of ["id", "code", "createdAt", "updatedAt", "approvals"]) delete patch[k];
-    if (newCode) patch.code = newCode;
+    if (newCode) {
+      patch.code = newCode;
+      // Logins that use the old employee code as username follow the new code
+      await this.db.query("UPDATE users SET username=$1 WHERE employee_id=$2 AND username=$3", [newCode, record.id, record.code]);
+    }
     const owner = OWNER_FIELD[key];
     const scope = this.access.scopeOf(s.role, resource);
     const isOwn = owner ? record[owner] === s.employeeId : false;
@@ -242,12 +250,28 @@ export class HooksService {
         if (record.status === "Approved" && scope !== "all") throw new HttpError(409, "Approved timesheets are locked");
         if (patch.hours !== undefined) patch.overtime = Math.max(0, Number(patch.hours) - 8);
         break;
-      case "employees":
+      case "employees": {
         if (patch.salary && !this.access.can(s.role, "compensation", "edit")) throw new HttpError(403, "You can't change compensation");
         delete patch.name;
+        // Role is stored on the employee's login, not the employee row
+        const role = patch.role === undefined ? undefined : roleKey(patch.role);
+        delete patch.role; delete patch.username;
+        if (role) {
+          const login = (await this.repo.find("users", { employeeId: record.id }))[0];
+          if (login && login.role !== role) {
+            if (!this.access.can(s.role, "users", "edit")) throw new HttpError(403, "Only an Admin can change roles");
+            if (login.id === s.userId) throw new HttpError(409, "You can't change your own role");
+            await this.db.query("UPDATE users SET role=$1 WHERE id=$2", [role, login.id]);
+            await this.access.audit(s, "Role Changed", "users", login.id, { from: login.role, to: role });
+          }
+        }
         break;
+      }
       case "users":
         delete patch.passwordHash;
+        if (typeof patch.username === "string" && patch.username.trim().toLowerCase() !== String(record.username).toLowerCase()) patch.username = await this.validUsername(patch.username, record.id);
+        else delete patch.username;
+        if (patch.employeeId !== undefined) patch.userType = patch.employeeId ? "Employee" : patch.userType ?? record.userType;
         if (patch.password) {
           if (String(patch.password).length < 8) throw new HttpError(400, "Password must be at least 8 characters");
           patch.passwordHash = bcrypt.hashSync(String(patch.password), 10);
@@ -300,6 +324,15 @@ export class HooksService {
         break;
     }
     return patch;
+  }
+
+  /** Trimmed username that no other account uses: letters, digits, dot, dash and underscore. */
+  private async validUsername(value: unknown, exceptUserId?: string) {
+    const u = String(value ?? "").trim();
+    if (!/^[A-Za-z0-9._-]{3,50}$/.test(u)) throw new HttpError(400, "Username must be 3-50 characters: letters, numbers, dot, dash or underscore");
+    const taken = await this.db.one<{ id: string }>("SELECT id FROM users WHERE username=$1 AND id <> COALESCE($2::uuid, '00000000-0000-0000-0000-000000000000')", [u, exceptUserId ?? null]);
+    if (taken) throw new HttpError(409, `Username "${u}" is already taken`);
+    return u;
   }
 
   async beforeDelete(key: string, record: Row, s: Session) {

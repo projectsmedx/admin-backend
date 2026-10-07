@@ -63,7 +63,7 @@ export class WorkflowsService {
             await A.notify({ employeeId: ctx.record.employeeId }, "Leave approved", "Your leave was approved.", "/leave");
             return { patch: { status: "Approved", approvals: withApproval(ctx.record, ctx.s, "Approved", ctx.payload.comment) }, message: "Leave approved" };
           }
-          return twoStep(["hr_admin", "hr_manager", "super_admin"], "Approved", "leaves", "/leave", "Leave request")(ctx);
+          return twoStep(["super_admin"], "Approved", "leaves", "/leave", "Leave request")(ctx);
         },
         reject: reject("leaves", "/leave", "Leave request"),
         cancel: async ({ s, record }) => {
@@ -74,11 +74,11 @@ export class WorkflowsService {
         },
       },
       expenses: {
-        approve: twoStep(["finance", "super_admin"], "Approved", "expenses", "/expenses", "Expense claim"),
+        approve: twoStep(["super_admin"], "Approved", "expenses", "/expenses", "Expense claim"),
         reject: reject("expenses", "/expenses", "Expense claim"),
         reimburse: async ({ s, record }) => {
           A.assertCan(s, "expenses", "approve");
-          if (!["finance", "super_admin"].includes(s.role)) throw new HttpError(403, "Only finance can mark reimbursed");
+          if (s.role !== "super_admin") throw new HttpError(403, "Only an Admin can mark reimbursed");
           requireStatus(record, ["Approved"]);
           await A.notify({ employeeId: record.employeeId }, "Expense reimbursed", `AED ${record.amount} for ${record.code} has been reimbursed.`, "/expenses");
           return { patch: { status: "Reimbursed", reimbursedAt: now(), approvals: withApproval(record, s, "Reimbursed") }, message: "Marked as reimbursed" };

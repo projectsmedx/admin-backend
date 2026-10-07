@@ -2,7 +2,7 @@
 // DB stores snake_case values ('manager_approved'); the API speaks labels ('Manager Approved').
 
 export const ENUMS = {
-  user_role: ["super_admin", "hr_admin", "hr_manager", "finance", "manager", "employee"],
+  user_role: ["super_admin", "manager", "pharmacist", "developer", "marketing", "customer_support"],
   access_scope: ["own", "team", "department", "all"],
   gender: ["male", "female"],
   employment_type: ["full_time", "part_time", "contract", "intern"],

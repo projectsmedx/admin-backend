@@ -33,14 +33,16 @@ export class AuthController {
   @Public()
   @Post("login")
   @HttpCode(200)
-  async login(@Body() body: { email?: string; password?: string }, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    if (!body.email || !body.password) throw new HttpError(400, "Email and password are required");
+  async login(@Body() body: { email?: string; username?: string; password?: string }, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    // One sign-in box: accepts the username (employee code) or the work email
+    const login = String(body.username ?? body.email ?? "").trim();
+    if (!login || !body.password) throw new HttpError(400, "Username and password are required");
     const settings = await this.access.settings<{ security?: { maxFailedAttempts?: number; lockoutMinutes?: number } }>();
     const maxAttempts = settings.security?.maxFailedAttempts ?? 5;
     const lockMinutes = settings.security?.lockoutMinutes ?? 15;
-    const user = (await this.repo.find("users", { email: body.email.trim().toLowerCase() }))[0];
+    const user = (await this.repo.find("users", login.includes("@") ? { email: login.toLowerCase() } : { username: login }))[0];
     const meta = { ip: clientIp(req), userAgent: String(req.headers["user-agent"] ?? "") };
-    if (!user) throw new HttpError(401, "Invalid email or password");
+    if (!user) throw new HttpError(401, "Invalid username or password");
     if (!user.active) throw new HttpError(403, "This account is deactivated. Contact HR.");
     if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) throw new HttpError(423, `Account locked after too many failed attempts. Try again after ${new Date(user.lockedUntil).toLocaleTimeString("en-GB", { timeZone: "Asia/Dubai" })}.`);
     if (!(await bcrypt.compare(body.password, String(user.passwordHash)))) {
@@ -48,7 +50,7 @@ export class AuthController {
       const locked = attempts >= maxAttempts;
       await this.repo.update("users", user.id, { failedAttempts: locked ? 0 : attempts, lockedUntil: locked ? new Date(Date.now() + lockMinutes * 60000).toISOString() : null });
       await this.access.audit({ userId: user.id, name: user.name, role: user.role, ...meta }, "Login Failed", "users", user.id, { attempts });
-      throw new HttpError(401, locked ? `Too many failed attempts. Account locked for ${lockMinutes} minutes.` : `Invalid email or password (${maxAttempts - attempts} attempt(s) left)`);
+      throw new HttpError(401, locked ? `Too many failed attempts. Account locked for ${lockMinutes} minutes.` : `Invalid username or password (${maxAttempts - attempts} attempt(s) left)`);
     }
     await this.repo.update("users", user.id, { failedAttempts: 0, lockedUntil: null, lastLoginAt: new Date().toISOString(), lastLoginIp: meta.ip });
     const session = { userId: user.id, email: user.email, name: user.name, role: user.role, employeeId: user.employeeId ?? null };
@@ -89,7 +91,7 @@ export class AuthController {
     if (!user || !user.active) throw new HttpError(401, "Account no longer active");
     const employee = s.employeeId ? await this.repo.get("employees", s.employeeId) : null;
     return {
-      user: { ...s, ip: undefined, userAgent: undefined, lastLoginAt: user.lastLoginAt, mfaEnabled: user.mfaEnabled },
+      user: { ...s, ip: undefined, userAgent: undefined, username: user.username, userType: user.userType, lastLoginAt: user.lastLoginAt, mfaEnabled: user.mfaEnabled },
       employee,
       permissions: this.access.permissions(s.role),
       teamIds: [...(await this.access.reportsOf(s.employeeId))],

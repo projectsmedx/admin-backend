@@ -6,7 +6,7 @@ REST API for the MedxDashboard platform. Global prefix `/api/v1`, Swagger UI at 
 
 1. Waits for PostgreSQL (`DATABASE_URL`).
 2. Applies pending migrations from `src/database/migrations/*.sql`, tracked in the `schema_migrations` table. `001_initial.sql` creates all 72 tables.
-3. If the `users` table is empty, seeds the demo organization: 53 employees, attendance, leave, payroll, documents, recruitment and more. Dates are generated relative to today.
+3. If `SEED_ON_START=true` and the `users` table is empty, seeds the company setup (departments, designations, shifts, leave types, holidays, settings) and the employees in `src/database/data/employees.json`, each with a login. Logins are saved to `../medx-logins-<date>.csv`.
 4. Loads the role permission matrix from `roles` / `role_permissions`.
 
 Set `RUN_MIGRATIONS=false` or `SEED_ON_START=false` to turn steps off.

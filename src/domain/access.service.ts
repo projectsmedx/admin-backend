@@ -2,7 +2,7 @@ import { HttpException, Injectable, Logger } from "@nestjs/common";
 import { DbService } from "../database/db.service.js";
 import { Repo } from "./repository.service.js";
 import type { Row } from "./resources.js";
-import { PERMISSIONS, ROLES, type Action, type PermissionMatrix, type Resource, type Role, type Scope } from "./rbac.js";
+import { PERMISSIONS, ROLES, ROLE_LABELS, type Action, type PermissionMatrix, type Resource, type Role, type Scope } from "./rbac.js";
 
 export interface Session {
   userId: string;
@@ -38,7 +38,8 @@ export const SELF_EDITABLE: Record<string, string[]> = {
   onboarding: ["tasks"],
 };
 
-const ROLE_GROUPS: Record<string, string[]> = { all: [...ROLES], hr: ["super_admin", "hr_admin", "hr_manager"], finance: ["super_admin", "finance"] };
+// HR and finance work is done by Admin
+const ROLE_GROUPS: Record<string, string[]> = { all: [...ROLES], hr: ["super_admin"], finance: ["super_admin"] };
 
 @Injectable()
 export class AccessService {
@@ -49,6 +50,16 @@ export class AccessService {
 
   // ----------------------------------------------------------------------- permissions (from DB)
   async loadPermissions() {
+    // A role without stored permissions (e.g. one added in code) starts from the defaults in rbac.ts
+    for (const role of ROLES) {
+      const id = (await this.db.one<{ id: string }>(
+        "INSERT INTO roles (key, name, description, is_system) VALUES ($1,$2,$3,true) ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key RETURNING id",
+        [role, ROLE_LABELS[role], `${ROLE_LABELS[role]} (system role)`],
+      ))!.id;
+      if (await this.db.one("SELECT 1 FROM role_permissions WHERE role_id=$1 LIMIT 1", [id])) continue;
+      for (const [resource, g] of Object.entries(PERMISSIONS[role])) await this.db.query("INSERT INTO role_permissions (role_id, resource, actions, scope) VALUES ($1,$2,$3,$4)", [id, resource, g!.actions, g!.scope]);
+      this.log.log(`Added default permissions for ${ROLE_LABELS[role]}`);
+    }
     const rows = await this.db.query<{ key: string; resource: string; actions: string[]; scope: Scope }>(
       "SELECT r.key, p.resource, p.actions, p.scope FROM role_permissions p JOIN roles r ON r.id = p.role_id",
     );
@@ -72,7 +83,7 @@ export class AccessService {
     if (!this.can(s.role, resource, action)) throw new HttpError(403, `You don't have permission to ${action} ${resource}`);
   }
   isHR(role: Role) {
-    return role === "super_admin" || role === "hr_admin" || role === "hr_manager";
+    return role === "super_admin";
   }
 
   // ----------------------------------------------------------------------- scopes
@@ -119,7 +130,7 @@ export class AccessService {
         return inScope(owner);
       });
     }
-    if (key === "cases" && !["super_admin", "hr_manager"].includes(s.role)) out = out.filter((r) => !r.confidential || r.employeeId === s.employeeId);
+    if (key === "cases" && s.role !== "super_admin") out = out.filter((r) => !r.confidential || r.employeeId === s.employeeId);
     if (key === "employees") out = out.map((r) => this.maskEmployee(s, r));
     if (key === "users") out = out.map(({ passwordHash: _p, ...u }) => u as unknown as T);
     return out;
@@ -127,6 +138,19 @@ export class AccessService {
 
   async assertInScope(s: Session, key: string, resource: Resource, row: Row) {
     if ((await this.filterByScope(s, key, resource, [row])).length === 0) throw new HttpError(403, "This record is outside your access scope");
+  }
+
+  /**
+   * Employee media (ID, passport, visa scans…): the employee themself, or someone who can edit that employee.
+   * Profile photos are visible to everyone signed in; pass `photo` to allow that.
+   */
+  async assertMediaAccess(s: Session, employeeId: string, opts: { edit?: boolean; photo?: boolean } = {}) {
+    if (employeeId === s.employeeId) return;
+    if (opts.photo && !opts.edit) return;
+    this.assertCan(s, "employees", "edit");
+    const emp = await this.repo.get("employees", employeeId);
+    if (!emp) throw new HttpError(404, "Employee not found");
+    await this.assertInScope(s, "employees", "employees", emp);
   }
 
   // ----------------------------------------------------------------------- masking

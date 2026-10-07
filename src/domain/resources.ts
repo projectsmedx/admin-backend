@@ -1,7 +1,8 @@
 // Declarative mapping between API objects (camelCase, labels) and PostgreSQL tables (snake_case, enums).
 // Each definition also loads/saves its child tables so the API returns one complete object.
+import { HttpException } from "@nestjs/common";
 import type { EnumName } from "./enums.js";
-import type { Resource } from "./rbac.js";
+import { ROLES, ROLE_LABELS, type Resource, type Role } from "./rbac.js";
 
 export type Row = { id: string; [k: string]: any };
 
@@ -57,6 +58,17 @@ const lc = (api: string, col = snake(api)) => f(api, col, "lc");
 const file = (api: string, col: string) => f(api, col, "file");
 const en = (api: string, enumName: EnumName, col = snake(api)): Field => ({ api, col, kind: "enum", enumName });
 const ro = (fl: Field): Field => ({ ...fl, ro: true });
+/** Text column with a fixed set of values, shown as labels in the API ("outsource" ↔ "Outsource"). */
+const labelled = (api: string, col: string, labels: Record<string, string>): Field => ({
+  api, col,
+  get: (db) => labels[db[col]] ?? db[col] ?? null,
+  set: (v) => {
+    if (v === undefined || v === null || v === "") return {};
+    const key = Object.keys(labels).find((k) => k === String(v).toLowerCase() || labels[k].toLowerCase() === String(v).toLowerCase());
+    if (!key) throw new HttpException(`Invalid value "${v}" for ${api}. Allowed: ${Object.values(labels).join(", ")}`, 400);
+    return { [col]: key };
+  },
+});
 const created = ro(t("createdAt"));
 const updated = ro(t("updatedAt"));
 
@@ -116,7 +128,7 @@ export async function saveApprovals(id: string, entity: string, list: any[] | un
     if (!userId) continue;
     await h.q(
       "INSERT INTO approval_steps (entity_type, entity_id, step, approver_user_id, approver_role, action, comment, acted_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-      [entity, id, existing + k + 1, userId, ["super_admin", "hr_admin", "hr_manager", "finance", "manager", "employee"].includes(s.role) ? s.role : null, String(s.action ?? "approved").toLowerCase(), s.comment || null, s.at ?? new Date().toISOString()],
+      [entity, id, existing + k + 1, userId, (ROLES as readonly string[]).includes(s.role) ? s.role : null, String(s.action ?? "approved").toLowerCase(), s.comment || null, s.at ?? new Date().toISOString()],
     );
   }
 }
@@ -145,25 +157,27 @@ async function cycleId(name: unknown, type: unknown, h: Helpers) {
 export const DEFS: Def[] = [
   {
     key: "users", path: "users", table: "users", resource: "users", orderBy: "display_name",
-    fields: [f("email"), f("name", "display_name"), en("role", "user_role"), f("employeeId"), b("active", "is_active"), i("failedAttempts"), t("lockedUntil"), t("lastLoginAt"), f("lastLoginIp"), b("mfaEnabled"), f("passwordHash"), t("passwordChangedAt"), created],
+    fields: [f("username"), f("email"), f("name", "display_name"), en("role", "user_role"), labelled("userType", "user_type", { employee: "Employee", other: "Other" }), f("employeeId"), b("active", "is_active"), i("failedAttempts"), t("lockedUntil"), t("lastLoginAt"), f("lastLoginIp"), b("mfaEnabled"), f("passwordHash"), t("passwordChangedAt"), created],
   },
   {
     key: "employees", path: "employees", table: "employees", resource: "employees", code: "EMP", orderBy: "code", softDelete: true,
     fields: [
       f("code"), f("firstName"), f("lastName"), f("email", "work_email"), f("personalEmail"), f("phone"), en("gender", "gender"), d("dateOfBirth"), f("nationality"), f("maritalStatus"), f("address"),
       f("departmentId"), f("designationId"), f("teamId"), f("managerId"), f("locationId"), en("employmentType", "employment_type"), en("workMode", "work_mode"), en("status", "employee_status"),
-      d("joiningDate"), d("probationEndDate"), d("confirmationDate"), d("lastWorkingDay"), i("noticePeriodDays"), f("emiratesId"), f("passportNumber"), f("laborCardNumber", "labour_card_number"), f("avatarColor"), f("jobRole", "job_role"), created,
+      d("joiningDate"), d("probationEndDate"), d("confirmationDate"), d("lastWorkingDay"), i("noticePeriodDays"), f("emiratesId"), f("passportNumber"), f("laborCardNumber", "labour_card_number"), f("avatarColor"), ro(f("avatarFileId", "avatar_file_id")), f("jobRole", "job_role"), labelled("engagementType", "engagement_type", { internal: "Internal", outsource: "Outsource", other: "Other" }), created,
     ],
     async load(rows, h) {
       if (!rows.length) return;
       const idList = ids(rows);
-      const [ec, bank, skills, sal, shifts] = await Promise.all([
+      const [ec, bank, skills, sal, shifts, logins] = await Promise.all([
         h.q("SELECT * FROM employee_emergency_contacts WHERE employee_id = ANY($1) ORDER BY is_primary DESC", [idList]),
         h.q("SELECT * FROM employee_bank_accounts WHERE employee_id = ANY($1) ORDER BY is_primary DESC", [idList]),
         h.q("SELECT employee_id, skill FROM employee_skills WHERE employee_id = ANY($1)", [idList]),
         h.q("SELECT * FROM salary_structures WHERE employee_id = ANY($1) AND effective_to IS NULL", [idList]),
         h.q("SELECT DISTINCT ON (employee_id) employee_id, shift_id FROM shift_assignments WHERE employee_id = ANY($1) AND (effective_to IS NULL OR effective_to >= current_date) ORDER BY employee_id, effective_from DESC", [idList]),
+        h.q("SELECT employee_id, role, username FROM users WHERE employee_id = ANY($1)", [idList]),
       ]);
+      const login = new Map(logins.map((u) => [u.employee_id, u]));
       const gec = group(ec, "employee_id"), gb = group(bank, "employee_id"), gs = group(skills, "employee_id"), gsal = group(sal, "employee_id"), gsh = group(shifts, "employee_id");
       for (const r of rows) {
         r.name = `${r.firstName} ${r.lastName}`.trim();
@@ -175,6 +189,10 @@ export const DEFS: Def[] = [
         const s = gsal.get(r.id)?.[0];
         r.salary = s ? { basic: s.basic, housing: s.housing, transport: s.transport, medical: s.medical, other: s.other_allowances } : { basic: 0, housing: 0, transport: 0, medical: 0, other: 0 };
         r.shiftId = gsh.get(r.id)?.[0]?.shift_id ?? null;
+        // Access role lives on the login; designation (job title) is separate
+        const u = login.get(r.id);
+        r.role = u ? ROLE_LABELS[u.role as Role] ?? u.role : null;
+        r.username = u?.username ?? null;
       }
     },
     async save(id, data, h, existing) {
