@@ -39,7 +39,8 @@ export class CoreController {
       `SELECT id, code, first_name || ' ' || last_name AS name, work_email AS email, phone, designation_id AS "designationId", department_id AS "departmentId",
               manager_id AS "managerId", location_id AS "locationId", job_role AS "jobRole", initcap(replace(status::text,'_',' ')) AS status, avatar_color AS "avatarColor",
               joining_date AS "joiningDate", CASE employment_type WHEN 'full_time' THEN 'Full-time' WHEN 'part_time' THEN 'Part-time' ELSE initcap(employment_type::text) END AS "employmentType",
-              initcap(work_mode::text) AS "workMode", initcap(gender::text) AS gender
+              initcap(work_mode::text) AS "workMode", initcap(gender::text) AS gender, initcap(engagement_type) AS "engagementType",
+              (SELECT role FROM users WHERE employee_id = employees.id) AS role
        FROM employees WHERE deleted_at IS NULL ORDER BY first_name, last_name`,
     );
   }
@@ -139,7 +140,7 @@ export class CoreController {
 
   // ----------------------------------------------------------------------- notifications
   private async mine(s: Session) {
-    const groups = Object.entries({ all: true, hr: ["super_admin", "hr_admin", "hr_manager"].includes(s.role), finance: ["super_admin", "finance"].includes(s.role) }).filter(([, v]) => v).map(([k]) => k);
+    const groups = Object.entries({ all: true, hr: s.role === "super_admin", finance: s.role === "super_admin" }).filter(([, v]) => v).map(([k]) => k);
     return this.db.query<Record<string, any>>(
       `SELECT n.id, n.title, n.message, n.link, n.created_at AS "createdAt", n.role_group AS role,
               CASE WHEN n.role_group IS NULL THEN n.is_read ELSE (r.user_id IS NOT NULL) END AS read

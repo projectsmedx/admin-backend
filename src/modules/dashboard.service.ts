@@ -65,7 +65,7 @@ export class DashboardService {
     const notMe = (r: Record<string, any>) => r.employeeId !== s.employeeId;
     const pending = {
       leaves: leavesAll.filter((l) => notMe(l) && (l.status === "Pending" || (l.status === "Manager Approved" && can("leaves", "approve") && A.scopeOf(s.role, "leaves") === "all"))).length,
-      expenses: expensesP.filter((x) => notMe(x) && (x.status === "Pending" || ["finance", "super_admin"].includes(s.role))).length,
+      expenses: expensesP.filter((x) => notMe(x) && (x.status === "Pending" || s.role === "super_admin")).length,
       corrections: correctionsP.filter(notMe).length,
       salaryRevisions: revisionsP.length,
       timesheets: timesheetsP.filter(notMe).length,

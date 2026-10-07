@@ -45,7 +45,6 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       RUN_MIGRATIONS: "true"
       SEED_ON_START: "true"
-      SEED_PASSWORD: ${SEED_PASSWORD:?Set SEED_PASSWORD in .env}
       SMTP_HOST: mailpit
       SMTP_PORT: 1025
       UPLOAD_DIR: /app/uploads

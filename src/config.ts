@@ -28,10 +28,8 @@ export const config = {
   cookieSecure: env("COOKIE_SECURE", "false") === "true",
   cookieDomain: env("COOKIE_DOMAIN") || undefined,
   runMigrations: env("RUN_MIGRATIONS", "true") !== "false",
-  seedOnStart: env("SEED_ON_START", "true") !== "false",
+  seedOnStart: env("SEED_ON_START", "false") === "true",
   seedDate: env("SEED_DATE"),
-  // Password given to every demo account when seeding; only needed when SEED_ON_START=true
-  seedPassword: env("SEED_PASSWORD"),
   // Initial password for logins created from the employee form when none is entered
   defaultUserPassword: env("DEFAULT_USER_PASSWORD"),
   // Domain for work emails generated when a hired candidate becomes an employee
